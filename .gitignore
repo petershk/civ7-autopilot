@@ -1,0 +1,9 @@
+# runtime data: game logs, strategy notes, chronicle, screenshots, videos
+logs/
+state/
+# generated at startup with this machine's paths
+mcp.json
+.gemini/
+brains.json
+__pycache__/
+*.pyc
