@@ -22,6 +22,7 @@ import traceback
 import brains
 import control
 import jev
+import learning
 from game import Game
 
 for _s in (sys.stdout, sys.stderr):  # Windows defaults piped output to cp1252, which can't print ✓ and friends
@@ -373,6 +374,7 @@ def run_claude(prompt, spec, tag, timeout=1500, max_rounds=None):
     if problem:  # e.g. switched on the dashboard to a brain this machine doesn't have
         log(f"{tag}: brain {spec} unavailable: {problem}")
         return f"brain unavailable: {problem}"
+    write_status(session=tag, sessionBrain=spec)  # so lesson changes are attributed to this session
     logfile = os.path.join(LOGS, f"{tag}.jsonl")
     system = SYSTEM_PROMPT + "\n\n" + read(PRIMER) + skills_text()
     t0 = time.time()
@@ -427,12 +429,18 @@ def city_assault(brief):
     cities = brief.get("cities") if isinstance(brief.get("cities"), list) else []
     mil = [u for u in near if u.get("hostile") and not re.search(r"SCOUT|SETTLER|WORKER|MERCHANT|MISSIONARY|ARCHAEOLOGIST|GREAT",
                                                                      str(u.get("type")))]
+    ours = [u["at"] for u in (brief.get("units") if isinstance(brief.get("units"), list) else [])
+            if u.get("at") and u.get("canAttack")]
+    dist = lambda a, b: max(abs(a[0] - b[0]), abs(a[1] - b[1]))
     for c in cities:
         if not c.get("at"):
             continue
-        d = [max(abs(u["at"][0] - c["at"][0]), abs(u["at"][1] - c["at"][1])) for u in mil if u.get("at")]
+        d = [dist(u["at"], c["at"]) for u in mil if u.get("at")]
         if sum(x <= 1 for x in d) >= 2 or sum(x <= 2 for x in d) >= 3:
             return f"{c.get('name')} under attack ({sum(x <= 2 for x in d)} hostile military units within 2 tiles)"
+        # one raider is enough to take an undefended town (Men-nefer fell that way on T71)
+        if any(x <= 1 for x in d) and not any(dist(a, c["at"]) <= 1 for a in ours):
+            return f"{c.get('name')} undefended with a hostile military unit next to it"
     return ""
 
 
@@ -501,6 +509,21 @@ def turn_prompt(g, turn, brief=None):
     return (f"It is turn {turn}. Play this turn completely, then call end_turn.\n\n"
             f"## Your strategy notes\n{notes}\n\n## Recent journal\n{journal_tail or '(empty)'}\n\n"
             f"## Briefing (fresh)\n```json\n{json.dumps(brief, separators=(',', ':'), ensure_ascii=False)}\n```")
+
+
+def audit_prompt(lessons):
+    listed = "\n".join(lessons[:15])
+    return ("LESSON AUDIT. Do NOT end the turn, move units or change anything in the game. Lessons are added to every "
+            "future session, so a wrong one quietly misleads every later decision. Check each lesson below against the "
+            "game's own data: lookup_rules for units, buildings, wonders, techs, civics, legacy paths and so on, plus the "
+            "read-only game tools (research_options, civic_options, get_rankings, get_briefing...). For each one, call "
+            "audit_lesson with a unique quote from it, a verdict and your evidence:\n"
+            "- verified: the data confirms it (say what you looked up and what it showed)\n"
+            "- refuted: the data contradicts it (it gets removed)\n"
+            "- strategy: a judgment call data can't settle; keep it only if it's sound advice, else refute it\n"
+            "- unverified: you couldn't check it either way\n"
+            "Be strict: a lesson built on one observation plus a guess about why ('may count', 'probably') is not "
+            "verified. Numbers and names must match the data exactly.\n\nLessons to check:\n" + listed)
 
 
 def review_prompt(g, turn, reason):
@@ -830,6 +853,13 @@ def main():
                 log(f"review failed: {e}")
             last_review_turn, last_age = turn, age
             json.dump({"turn": turn, "age": age}, open(REVIEWF, "w"))
+            # fact-check the lessons nobody has checked yet: they go into every future session
+            todo = learning.unverified() if learning.mode() != "off" else []
+            if todo:
+                try:
+                    run_claude(audit_prompt(todo), review_brain(), f"audit_T{turn:03d}", timeout=900)
+                except Exception as e:
+                    log(f"lesson audit failed: {e}")
 
         # nothing to decide: end the turn without paying for a model session (the agent still sees
         # every turn that has a decision, a threat or diplomacy, and at least every few turns regardless)
@@ -973,14 +1003,36 @@ def code_changed():
 def supervise():
     """Run the autopilot in a child process and start a fresh one whenever it exits with RESTART_CODE
     (its code changed). --new only applies to the first run: restarts continue the game."""
+    import py_compile
     args = sys.argv[1:]
+    crashes = []
     while True:
         rc = subprocess.call([sys.executable, "-u", os.path.abspath(__file__)] + args,
                              env=dict(os.environ, CIV_AUTOPILOT_CHILD="1"))
-        if rc != RESTART_CODE:
-            sys.exit(rc)
+        if rc == 0:
+            sys.exit(0)  # finished (game over, or --max-turns)
         args = [a for a in args if a != "--new"]
-        time.sleep(2)
+        if rc == RESTART_CODE:
+            time.sleep(2)
+            continue
+        # it crashed. A half-finished edit (code that doesn't compile) must not end the run: wait until it compiles
+        while True:
+            broken = []
+            for f in CODE_FILES:
+                try:
+                    py_compile.compile(f, doraise=True)
+                except py_compile.PyCompileError as e:
+                    broken.append(f"{os.path.basename(f)}: {e.msg.strip().splitlines()[-1]}")
+            if not broken:
+                break
+            log(f"autopilot code doesn't compile ({'; '.join(broken)}) - waiting for a fix")
+            time.sleep(20)
+        crashes = [t for t in crashes if time.time() - t < 600] + [time.time()]
+        if len(crashes) > 5:
+            log("autopilot crashed 6 times in 10 minutes - giving up; see the traceback above")
+            sys.exit(rc)
+        log(f"autopilot exited with code {rc} - restarting in 15s")
+        time.sleep(15)
 
 
 if __name__ == "__main__":

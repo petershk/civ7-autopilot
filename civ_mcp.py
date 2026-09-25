@@ -458,6 +458,14 @@ def write_notes(content: str) -> str:
     priorities, city plans, threats, diplomacy stance, lessons learned."""
     with open(NOTES, "w", encoding="utf-8") as f:
         f.write(content)
+    try:  # keep every version, so how the plan's reasoning evolves can be audited (dashboard: Settings > audit)
+        turn = g.call("turnState").get("turn")
+        hist = os.path.join(os.path.dirname(NOTES), "notes_history")
+        os.makedirs(hist, exist_ok=True)
+        with open(os.path.join(hist, f"T{int(turn or 0):03d}.md"), "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception:
+        pass
     return "saved"
 
 
@@ -502,6 +510,15 @@ def rewrite_lessons(content: str) -> str:
     """STRATEGY REVIEWS ONLY: replace the whole learned-lessons list with a curated version (merge duplicates,
     drop lessons proven wrong or obsolete, keep it under ~80 lines, grouped under '## Topic' headings)."""
     return learning.rewrite(content)
+
+
+@app.tool()
+def audit_lesson(lesson: str, verdict: str, evidence: str) -> str:
+    """LESSON AUDITS ONLY: record your check of one lesson. lesson = a unique quote from it. verdict:
+    "verified" (the game's rules data or a clear game outcome confirms it), "strategy" (a judgment call that data
+    can't settle; keep as advice), "refuted" (the data contradicts it; it is removed), or "unverified" (you
+    couldn't check it). evidence: what you looked up and what it showed, in one or two sentences."""
+    return learning.set_status(lesson, verdict, evidence)
 
 
 @app.tool()

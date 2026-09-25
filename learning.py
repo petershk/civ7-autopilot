@@ -18,6 +18,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 LESSONS = os.path.join(HERE, "skills", "learned", "SKILL.md")
 LOG = os.path.join(HERE, "logs", "autopilot.log")
 USAGE = os.path.join(HERE, "state", "research_usage.json")
+LEDGER = os.path.join(HERE, "state", "lessons_ledger.jsonl")  # every change to the lessons, with who/when/why
+HISTORY = os.path.join(HERE, "state", "lessons_history")       # the file as it was before each rewrite
+STATUS = os.path.join(HERE, "state", "status.json")
 MAX_CHARS = 9000  # beyond this the lessons eat too much of every prompt; the review should consolidate
 
 HEADER = """---
@@ -26,7 +29,77 @@ description: Lessons the Civ VII agent learned from its own games and research (
 ---
 # Lessons we learned (from our own games and research)
 Apply these; they came from real outcomes. Newer lessons override older ones that conflict.
+Tags: [verified] = checked against the game's rules data or confirmed by the user. [strategy] = a judgment call
+that data can't settle. [unverified] = from a single observation or guess: treat it as a hint and check it
+(lookup_rules) before relying on it.
 """
+TAGS = ("verified", "strategy", "unverified")
+TAG_RE = re.compile(r"\s*\[(verified|strategy|unverified)\]")
+PROV_RE = re.compile(r"\s*_\(([^)]*)\)_\s*$")
+
+
+def _session():
+    """Which session is acting (the autopilot records it before each run)."""
+    try:
+        st = json.load(open(STATUS, encoding="utf-8"))
+        return {"session": st.get("session"), "brain": st.get("sessionBrain"), "turn": st.get("turn"), "age": st.get("age")}
+    except (OSError, ValueError):
+        return {}
+
+
+def ledger(action, **kw):
+    os.makedirs(os.path.dirname(LEDGER), exist_ok=True)
+    rec = {"time": dt.datetime.now().isoformat(timespec="seconds"), "action": action, **_session(), **kw}
+    with open(LEDGER, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def read_ledger(n=300):
+    try:
+        return [json.loads(l) for l in open(LEDGER, encoding="utf-8").read().splitlines()[-n:] if l.strip()]
+    except (OSError, ValueError):
+        return []
+
+
+def _plain(line):
+    """A lesson without its tag and provenance, for recognising it across rewrites."""
+    return " ".join(PROV_RE.sub("", TAG_RE.sub("", line)).lstrip("- ").split()).lower()
+
+
+def _tag_of(line):
+    m = TAG_RE.search(line)
+    return m.group(1) if m else None
+
+
+def _with_tag(line, tag):
+    line = TAG_RE.sub("", line).rstrip()
+    m = PROV_RE.search(line)
+    return (line[:m.start()] + f" [{tag}]" + line[m.start():]) if m else f"{line} [{tag}]"
+
+
+def bullets(text=None):
+    """[(topic, line)] for every lesson."""
+    out, topic = [], "General"
+    for line in (read_lessons() if text is None else text).splitlines():
+        if line.startswith("## "):
+            topic = line[3:].strip()
+        elif line.startswith("- "):
+            out.append((topic, line))
+    return out
+
+
+def lessons_report():
+    """Every lesson with its status, topic and where it came from (the dashboard's audit view)."""
+    out = []
+    for topic, line in bullets():
+        prov = PROV_RE.search(line)
+        out.append({"topic": topic, "text": PROV_RE.sub("", TAG_RE.sub("", line))[2:].strip(),
+                    "status": _tag_of(line) or "unverified", "source": prov.group(1) if prov else ""})
+    return out
+
+
+def unverified():
+    return [l for _, l in bullets() if (_tag_of(l) or "unverified") == "unverified"]
 
 
 def mode():
@@ -58,7 +131,7 @@ def remember(topic, lesson, where=""):
     text = read_lessons()
     if lesson.lower()[:80] in text.lower():
         return "already known"
-    bullet = f"- {lesson}" + (f" _({where})_" if where else "")
+    bullet = f"- {lesson} [unverified]" + (f" _({where})_" if where else "")
     head = f"\n## {topic}\n"
     if head in text:
         i = text.index(head) + len(head)
@@ -68,7 +141,8 @@ def remember(topic, lesson, where=""):
     else:
         text = text.rstrip("\n") + "\n" + head + bullet + "\n"
     _write(text)
-    note = "saved"
+    ledger("add", topic=topic, lesson=lesson, where=where)
+    note = "saved as [unverified]; it is checked at the next strategy review"
     if len(text) > MAX_CHARS:
         note += f" (lessons file is {len(text)} chars; the next strategy review should consolidate it)"
     return note
@@ -78,10 +152,53 @@ def rewrite(content):
     """Replace the lessons (strategist review curation). Keeps the header."""
     if mode() == "off":
         return "learning is turned off in the settings"
+    old = read_lessons()
     body = content.split("---", 2)[-1] if content.lstrip().startswith("---") else content
-    body = re.sub(r"^# Lessons we learned.*?\n(Apply these.*?\n)?", "", body.lstrip(), flags=re.S)
-    _write(HEADER + body.strip() + "\n")
-    return f"saved ({len(HEADER + body)} chars)"
+    body = "\n" + body.strip()
+    body = body[body.index("\n## "):] if "\n## " in body else body  # drop any header the model copied
+    # a rewrite may merge and reword, but it can't mark anything checked: a lesson keeps [verified]/[strategy]
+    # only if that exact lesson already had it; anything new or reworded is [unverified] until the audit
+    known = {_plain(l): _tag_of(l) for _, l in bullets(old)}
+    lines = []
+    for line in body.strip().splitlines():
+        if line.startswith("- "):
+            tag = known.get(_plain(line))
+            line = _with_tag(line, tag if tag in ("verified", "strategy") else "unverified")
+        lines.append(line)
+    new = HEADER + "\n".join(lines).strip() + "\n"
+    os.makedirs(HISTORY, exist_ok=True)
+    with open(os.path.join(HISTORY, f"SKILL.{dt.datetime.now():%Y%m%d-%H%M%S}.md"), "w", encoding="utf-8") as f:
+        f.write(old)
+    _write(new)
+    was = {_plain(l): l[2:] for _, l in bullets(old)}
+    now = {_plain(l): l[2:] for _, l in bullets(new)}
+    ledger("rewrite", removed=[v for k, v in was.items() if k not in now], added=[v for k, v in now.items() if k not in was])
+    return f"saved ({len(new)} chars)"
+
+
+def set_status(fragment, status, evidence="", by=None):
+    """Mark one lesson (found by a unique fragment of its text) verified / strategy / unverified, or 'refuted' to
+    remove it. The evidence goes in the ledger. by: who decided (default: the current session)."""
+    status = str(status).lower().strip()
+    if status not in TAGS + ("refuted",):
+        return f"status must be one of {TAGS + ('refuted',)}"
+    frag = " ".join(str(fragment).split()).lower()
+    text = read_lessons()
+    hits = [l for _, l in bullets(text) if frag and frag in " ".join(l.split()).lower()]
+    if len(hits) != 1:
+        return f"{'no' if not hits else len(hits)} lessons match that text; quote a longer, unique part of one lesson"
+    line = hits[0]
+    lines = text.splitlines()
+    i = lines.index(line)
+    if status == "refuted":
+        del lines[i]
+        if lines[i - 1].startswith("## ") and (i >= len(lines) or not lines[i].startswith("- ")):
+            del lines[i - 1]  # its topic has no lessons left
+    else:
+        lines[i] = _with_tag(line, status)
+    _write("\n".join(lines).rstrip("\n") + "\n")
+    ledger(status, lesson=line[2:], evidence=evidence, **({"by": by} if by else {}))
+    return f"{status}: {PROV_RE.sub('', TAG_RE.sub('', line))[2:][:120]}"
 
 
 def _usage():

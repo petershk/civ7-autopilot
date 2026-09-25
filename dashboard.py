@@ -325,7 +325,11 @@ def skills_report():
         usage = json.loads(read(os.path.join(STATE, "research_usage.json"), "{}") or "{}")
     except ValueError:
         usage = {}
-    return {"skills": out, "lessons": read(learning.LESSONS, ""), "researchUsage": usage}
+    notes = []
+    for path in sorted(glob.glob(os.path.join(STATE, "notes_history", "T*.md")))[-15:]:
+        notes.append({"turn": int(re.sub(r"\D", "", os.path.basename(path)) or 0), "text": read(path)})
+    return {"skills": out, "lessons": read(learning.LESSONS, ""), "researchUsage": usage,
+            "audit": learning.lessons_report(), "ledger": learning.read_ledger(60)[::-1], "notes": notes}
 
 
 def api_state():
@@ -456,7 +460,11 @@ tr.me td{background:#1c2433}.bar{height:5px;background:var(--line);border-radius
 </table></section>
 <section><h2>Setup</h2><div class="muted" style="font-size:11.5px;margin-bottom:6px">optional components on the machine running the autopilot</div><table id="setupTbl"></table><button id="btnInstAll" class="btn" style="display:none">Install all missing</button><pre id="instLog" style="display:none;max-height:180px;overflow:auto;font-size:11px;white-space:pre-wrap"></pre></section><section><h2>Narration</h2><table><tr><th style="width:150px">Read aloud</th><td><label><input type="checkbox" id="cTTS"> narrate the chronicle</label><div class="muted" style="font-size:11.5px">reads each new chronicle entry in this browser</div></td></tr><tr><th style="width:150px">Voice</th><td><select id="cVoice" title="Narrator voice"><option value="en-GB-RyanNeural">Ryan (UK)</option><option value="en-GB-ThomasNeural">Thomas (UK)</option><option value="en-US-AndrewNeural">Andrew (US)</option><option value="en-US-BrianNeural">Brian (US)</option><option value="en-US-ChristopherNeural">Christopher (US)</option><option value="en-US-GuyNeural">Guy (US)</option><option value="en-US-DavisNeural">Davis (US)</option><option value="en-GB-SoniaNeural">Sonia (UK)</option><option value="en-US-AriaNeural">Aria (US)</option></select> <button id="btnTest" class="btn" title="Hear the latest entry">▶ test</button><div class="muted" style="font-size:11.5px">saved in this browser only</div><div id="ttsStatus" style="font-size:11.5px"></div></td></tr></table></section></div>
 </div>
-<section style="margin-top:14px"><h2>What it knows</h2><div id="skillList" class="muted" style="margin-bottom:8px"></div><pre class="notes" id="lessons" style="max-height:36vh"></pre></section>
+<section style="margin-top:14px"><h2>What it knows</h2><div id="skillList" class="muted" style="margin-bottom:8px"></div>
+<div class="muted" style="font-size:12px;margin-bottom:6px">Lessons go into every future session, so a wrong one misleads every later decision. New lessons start <b>unverified</b>; after each strategy review a fact-check session tests them against the game's rules data. You have the final say.</div>
+<div id="auditSum" style="margin-bottom:6px"></div><div id="auditList" style="max-height:40vh;overflow:auto"></div>
+<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">Change history</summary><div id="ledger" style="max-height:30vh;overflow:auto;font-size:12px"></div></details>
+<details style="margin-top:6px"><summary class="muted" style="cursor:pointer">Strategy plan over time</summary><select id="notesPick" style="margin:6px 0"></select><pre class="notes" id="notesView" style="max-height:36vh"></pre></details></section>
 </div>
 <div id="tab-costs" style="display:none;padding:14px 20px">
 <div>
@@ -829,8 +837,29 @@ const usd=v=>v==null?'–':v<0.01&&v>0?'$'+v.toFixed(4):'$'+v.toFixed(3);
 async function skillTick(){
  let k;try{k=await (await fetch('/api/skills')).json()}catch(e){return}
  $('skillList').innerHTML='Skills: '+(k.skills.map(x=>`<b style="color:var(--fg)">${esc(x.folder)}</b> <span title="${esc(x.description)}">(${Math.round(x.chars/1000*10)/10}k chars)</span>`).join(' · ')||'none');
- $('lessons').textContent=(k.lessons||'(no lessons saved yet: the agent adds them with remember_lesson as it plays)').replace(/^---[\s\S]*?---\s*/,'');
+ renderAudit(k);
  const age=(window.lastAge||''),used=k.researchUsage[age]||0;$('researchUsed').textContent=`used ${used} this age · each research session costs about $0.10-0.50`}
+const STC={verified:'#3fb950',strategy:'#58a6ff',unverified:'#e3b341'};
+const chip=(t,c)=>`<span style="font-size:11px;padding:1px 6px;border-radius:9px;border:1px solid ${c};color:${c}">${esc(t)}</span>`;
+function renderAudit(k){
+ const L=k.audit||[];const n=s=>L.filter(x=>x.status==s).length;
+ $('auditSum').innerHTML=L.length?`${chip(n('verified')+' verified',STC.verified)} ${chip(n('strategy')+' strategy',STC.strategy)} ${chip(n('unverified')+' unverified',STC.unverified)}`:'<span class="muted">no lessons yet</span>';
+ if(!$('auditList').contains(document.activeElement)){
+  const order={unverified:0,strategy:1,verified:2};
+  $('auditList').innerHTML=L.slice().sort((a,b)=>order[a.status]-order[b.status]).map(x=>`<div style="padding:6px 0;border-bottom:1px solid var(--line)">${chip(x.status,STC[x.status])} <span class="muted" style="font-size:11.5px">${esc(x.topic)} · ${esc(x.source||'?')}</span><div style="margin:3px 0">${esc(x.text)}</div>`+
+   `<button class="btn" data-l="confirm">✓ confirm</button> <button class="btn" data-l="strategy">keep as strategy</button> <button class="btn" data-l="reject">✗ reject</button></div>`).join('');
+  $('auditList').querySelectorAll('[data-l]').forEach((b,i)=>{const x=L.slice().sort((a,b)=>order[a.status]-order[b.status])[Math.floor(i/3)];
+   b.onclick=async()=>{const note=b.dataset.l=='reject'?(prompt('Why is it wrong? (optional, saved in the history)')??''):'';
+    const r=await (await fetch('/api/lesson',{method:'POST',headers:{'X-Civ-Dashboard':'1'},body:JSON.stringify({action:b.dataset.l,text:x.text.slice(0,120),note})})).json();
+    if(!r.ok)alert(r.msg);skillTick()}})}
+ const who=e=>e.by||e.session||'?';
+ $('ledger').innerHTML=(k.ledger||[]).map(e=>`<div style="padding:4px 0;border-bottom:1px solid var(--line)"><span class="muted">${esc((e.time||'').replace('T',' ').slice(5,16))} · T${esc(e.turn??'?')} · ${esc(who(e))}</span> <b>${esc(e.action)}</b> ${esc(e.lesson||e.note||'')}`+
+  (e.evidence?`<div class="muted">evidence: ${esc(e.evidence)}</div>`:'')+
+  ((e.removed||[]).length?`<div style="color:#f85149">removed: ${e.removed.map(esc).join('<br>')}</div>`:'')+((e.added||[]).length?`<div style="color:#3fb950">added: ${e.added.map(esc).join('<br>')}</div>`:'')+`</div>`).join('')||'<span class="muted">no changes recorded yet</span>';
+ const N=k.notes||[];const cur=$('notesPick').value;
+ $('notesPick').innerHTML=N.slice().reverse().map(x=>`<option value="${x.turn}">plan written on turn ${x.turn}</option>`).join('')||'<option>no saved plans yet</option>';
+ if(cur&&N.some(x=>String(x.turn)==cur))$('notesPick').value=cur;
+ const show=()=>{const x=N.find(x=>String(x.turn)==$('notesPick').value);$('notesView').textContent=x?x.text:''};$('notesPick').onchange=show;show()}
 function settingsTick(){if(tab!='settings')return;renderCfg();skillTick()}
 async function costTick(){
  if(tab!='costs')return;
@@ -969,6 +998,20 @@ def _do_post(self):
         except ValueError:
             opts = {}
         out = json.dumps(start_video(opts)).encode("utf-8")
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(out)
+        return
+    if self.path.startswith("/api/lesson"):
+        # you confirm or reject a lesson from the audit view (same cross-site guard as installs)
+        if self.headers.get("X-Civ-Dashboard") != "1":
+            self.send_response(403); self.end_headers(); return
+        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            body = json.loads(self.rfile.read(n) or b"{}")
+        except ValueError:
+            body = {}
+        status = {"confirm": "verified", "reject": "refuted", "strategy": "strategy"}.get(body.get("action"), "")
+        msg = learning.set_status(body.get("text", ""), status, body.get("note") or "decided in the dashboard", by="you")             if status else "unknown action"
+        out = json.dumps({"ok": not msg.startswith(("no ", "status")) and "match" not in msg, "msg": msg}).encode("utf-8")
         self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(out)
         return
     if self.path.startswith("/api/install"):
