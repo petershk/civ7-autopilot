@@ -10,10 +10,30 @@
   CB.version = 3;
   CB.settlerTargets = CB.settlerTargets || {};
 
-  // Give a unit a "stay put" order: fortify if possible, else skip.
+  // Give a unit a "stay put" order: fortify if possible, else skip. A unit in a city can't fortify, and with
+  // enemies in view alert/sleep are refused too, which left "Command Units" blocking the turn. So after the
+  // usual orders: send skip-turn unchecked, then step onto a quiet tile of our own next to it and hold there.
+  const HOLD_OPS = ["UNITOPERATION_FORTIFY", "UNITOPERATION_ALERT", "UNITOPERATION_SKIP_TURN", "UNITOPERATION_SLEEP"];
+  const stillReady = (uidS) => CB.readyUnits().includes(uidS);
+  const holdOnce = (uidS) => { for (const a of HOLD_OPS) { const r = CB.unitDo(uidS, a); if (r.ok) return r; } return null; };
   CB.hold = (uidS) => {
-    for (const a of ["UNITOPERATION_FORTIFY", "UNITOPERATION_ALERT", "UNITOPERATION_SKIP_TURN", "UNITOPERATION_SLEEP"]) {
-      const r = CB.unitDo(uidS, a); if (r.ok) return r;
+    const r = holdOnce(uidS); if (r) return r;
+    const u = (P().Units.getUnits() || []).find(v => cid(v.id) == uidS); if (!u) return { ok: false, error: "no such unit" };
+    safe(() => Game.UnitOperations.sendRequest(u.id, "UNITOPERATION_SKIP_TURN", {}));
+    if (!stillReady(uidS)) return { ok: true, action: "UNITOPERATION_SKIP_TURN", note: "sent unchecked" };
+    const foreignNear = (x, y) => safe(() => GameplayMap.getPlotIndicesInRadius(x, y, 1), []).some(i => {
+      const l = GameplayMap.getLocationFromIndex(i);
+      return safe(() => MapUnits.getUnits(l.x, l.y), []).some(id => safe(() => Units.get(id).owner) != me());
+    });
+    const spots = safe(() => GameplayMap.getPlotIndicesInRadius(u.location.x, u.location.y, 1), [])
+      .map(i => GameplayMap.getLocationFromIndex(i))
+      .filter(l => (l.x != u.location.x || l.y != u.location.y) && safe(() => GameplayMap.getOwner(l.x, l.y)) == me()
+        && !safe(() => MapUnits.getUnits(l.x, l.y), []).length)
+      .sort((a, b) => foreignNear(a.x, a.y) - foreignNear(b.x, b.y));
+    for (const l of spots) {
+      if (!safe(() => CB.moveTo(uidS, l.x, l.y), {}).ok) continue;
+      const h = holdOnce(uidS);
+      if (h || !stillReady(uidS)) return { ok: true, action: h ? h.action : "moved", note: `stepped to ${l.x},${l.y} to hold` };
     }
     return { ok: false };
   };

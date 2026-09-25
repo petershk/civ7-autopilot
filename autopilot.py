@@ -23,6 +23,12 @@ import control
 import jev
 from game import Game
 
+for _s in (sys.stdout, sys.stderr):  # Windows defaults piped output to cp1252, which can't print ✓ and friends
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE = os.path.join(HERE, "state")
 LOGS = os.path.join(HERE, "logs")
@@ -47,9 +53,12 @@ DEFAULT_SETUP = {
 
 def log(msg):
     line = f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}"
-    print(line, flush=True)
     with open(os.path.join(LOGS, "autopilot.log"), "a", encoding="utf-8") as f:
         f.write(line + "\n")
+    try:  # the console is best-effort; never let it fail a turn
+        print(line, flush=True)
+    except (UnicodeError, OSError):
+        pass
 
 
 def write_status(**kw):
