@@ -142,9 +142,17 @@ def launch_game():
     except Exception:
         pass
     for attempt in range(3):
+        if not game_running():
+            # a crash leaves the Firaxis Crash Reporter window open, and Steam won't start the game while it is
+            # (it also runs quietly beside a healthy game, so only close it when no game is running)
+            subprocess.run(["taskkill", "/F", "/IM", "FiraxisCrashReporter.exe"], capture_output=True)
         log(f"launching Civ VII via {steam}")
         subprocess.Popen([steam, "-applaunch", STEAM_APPID])
         for i in range(300):
+            if i == 45 and not game_running():
+                log("Steam didn't start the game - asking again")
+                subprocess.run(["taskkill", "/F", "/IM", "FiraxisCrashReporter.exe"], capture_output=True)
+                subprocess.Popen([steam, "-applaunch", STEAM_APPID])
             if port_open():
                 log("tuner port open")
                 time.sleep(20)
