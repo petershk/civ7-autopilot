@@ -115,10 +115,16 @@ CAPPED = "[hit round cap] "
 
 
 def run_claude(prompt, system, model, logfile, timeout, max_rounds=None):
-    cmd = ["claude", "-p", prompt, "--model", model or "sonnet",
+    # Windows caps a command line at ~32K characters, and the instructions (primer, skills, lessons) plus the
+    # turn prompt (plan, journal, briefing) outgrew it: sessions failed with WinError 206. So the instructions
+    # go in a file and the prompt through stdin.
+    sysfile = os.path.splitext(logfile)[0] + ".system.md"
+    with open(sysfile, "w", encoding="utf-8") as f:
+        f.write(system)
+    cmd = ["claude", "-p", "--model", model or "sonnet",
            "--mcp-config", os.path.join(HERE, "mcp.json"), "--strict-mcp-config",
            "--allowedTools", "mcp__civ7", "--tools", "", "--setting-sources", "project,local",
-           "--append-system-prompt", system, "--output-format", "stream-json", "--verbose", "--no-session-persistence"]
+           "--append-system-prompt-file", sysfile, "--output-format", "stream-json", "--verbose", "--no-session-persistence"]
     if max_rounds:
         cmd += ["--max-turns", str(max_rounds)]
     out = {"result": "", "tools": 0, "cost": None}
@@ -135,7 +141,7 @@ def run_claude(prompt, system, model, logfile, timeout, max_rounds=None):
                 out["result"], out["cost"] = ev.get("result", "") or "", ev.get("total_cost_usd")
                 if ev.get("subtype") == "error_max_turns":
                     out["result"] = CAPPED + out["result"]
-        rc = _run_stream(cmd, on, timeout)
+        rc = _run_stream(cmd, on, timeout, stdin_text=prompt)
     return out["result"], out["tools"], out["cost"], rc
 
 
@@ -285,9 +291,9 @@ def ask(spec, prompt, timeout=300):
     prov, model = parse_spec(spec)
     try:
         if prov == "claude":
-            out = subprocess.run(["claude", "-p", prompt, "--model", model or "sonnet", "--tools", "",
+            out = subprocess.run(["claude", "-p", "--model", model or "sonnet", "--tools", "",
                                   "--setting-sources", "project,local", "--no-session-persistence"],
-                                 capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, encoding="utf-8")
+                                 input=prompt, capture_output=True, text=True, timeout=timeout, encoding="utf-8")
             return out.stdout
         if prov in OPENAI_COMPAT:
             from openai import OpenAI
