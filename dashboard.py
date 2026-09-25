@@ -36,6 +36,17 @@ def read(path, default=""):
         return default
 
 
+def connected_game():
+    """The shared game connection, but only while a game is fully loaded. The bot's game functions read game
+    objects that don't exist at the main menu, the first-run screens or a loading screen, and calling them
+    there crashes Civ VII (access violation). Raises instead, so callers show "no game" and retry later."""
+    g = _game or Game()
+    st = g.raw("typeof UI!=='undefined'&&UI.isInGame()&&!UI.isInShell()&&UI.getGameLoadingState()==8?'1':'0'")
+    if st != "1":
+        raise RuntimeError("no game loaded (main menu or loading screen)")
+    return g
+
+
 def live_game():
     """Overview/cities/units from the running game, cached for 8 seconds."""
     global _game
@@ -43,8 +54,7 @@ def live_game():
         if time.time() - _cache["t"] < 8:
             return _cache["live"], _cache["err"]
         try:
-            if _game is None:
-                _game = Game()
+            _game = connected_game()
             live = {"overview": _game.call("overview"), "cities": _game.call("cities"),
                     "units": _game.call("units"), "players": _game.call("players"),
                     "rankings": _game.call("rankings")}
@@ -67,8 +77,7 @@ def trees():
         if time.time() - _tcache["t"] < 10 and _tcache["data"] is not None:
             return _tcache["data"]
         try:
-            if _game is None:
-                _game = Game()
+            _game = connected_game()
             data = _game.call("trees")
         except Exception as e:
             _game = None
@@ -84,14 +93,25 @@ def brain_list():
     return _bcache["data"]
 
 
+def brain_problems():
+    """For each role, why the brain it will use can't run on this machine ({} = all fine)."""
+    defs = json.loads(read(os.path.join(STATE, "status.json"), "{}") or "{}").get("defaults", {})
+    ctl = control.get()
+    eff = {k: ctl.get(k) or defs.get(k) or "" for k in ("turnBrain", "reviewBrain", "routineBrain", "retryBrain")}
+    if eff["routineBrain"] == "turn":
+        eff["routineBrain"] = eff["turnBrain"]
+    if eff["retryBrain"] in ("", "same as hard turns"):
+        eff["retryBrain"] = eff["turnBrain"]
+    return {k: p for k, spec in eff.items() if spec and (p := brains.check(spec))}
+
+
 def world_map():
     global _game
     with _lock:
         if time.time() - _mcache["t"] < 6 and _mcache["data"] is not None:
             return _mcache["data"]
         try:
-            if _game is None:
-                _game = Game()
+            _game = connected_game()
             data = _game.call("worldMap")
         except Exception as e:
             _game = None
@@ -132,8 +152,7 @@ def full_history():
         if time.time() - _hcache["t"] < 20 and _hcache["data"] is not None:
             return _hcache["data"]
         try:
-            if _game is None:
-                _game = Game()
+            _game = connected_game()
             summ = _game.call("summaryHistory")
         except Exception:
             _game = None
@@ -213,8 +232,7 @@ def intel():
         if time.time() - _icache["t"] < 10 and _icache["data"] is not None:
             return _icache["data"]
         try:
-            if _game is None:
-                _game = Game()
+            _game = connected_game()
             data = {"civs": _game.call("intel"), "rankings": _game.call("rankings")}
         except Exception as e:
             _game = None
@@ -373,7 +391,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{padding:4px 6px
 .ctl{display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:12.5px;color:var(--dim)}
 .ctl button{background:var(--line);color:var(--fg);border:1px solid #333a48;border-radius:7px;padding:4px 12px;cursor:pointer;font:inherit}
 .btn{background:var(--line);color:var(--fg);border:1px solid #333a48;border-radius:7px;padding:3px 10px;cursor:pointer;font:inherit}
-#tab-costs select{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:5px}
+#tab-settings select,#tab-costs select{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:5px}
 .ctl button.paused{background:#3a1618;color:var(--bad)}.ctl select{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:5px}
 .chron{max-height:34vh;overflow:auto;display:flex;flex-direction:column;gap:8px}
 .chron .e{font-family:Georgia,'Times New Roman',serif;font-size:15px;line-height:1.5;padding:6px 10px;border-left:3px solid var(--acc);background:#1d1b16}
@@ -400,9 +418,9 @@ canvas#mapc{display:block;margin:0 auto;background:#0a0c10;border-radius:8px}
 tr.me td{background:#1c2433}.bar{height:5px;background:var(--line);border-radius:3px;margin-top:2px}.bar i{display:block;height:5px;border-radius:3px;background:var(--blue)}
 
 </style></head><body>
-<header><h1>⚜ Civ VII Autopilot</h1><nav class="tabs"><a data-tab="overview" class="on">Overview</a><a data-tab="map">Map</a><a data-tab="charts">Charts</a><a data-tab="tree">Tech tree</a><a data-tab="civs">Civilizations</a><a data-tab="costs">Settings &amp; costs</a></nav><span id="state" class="pill">…</span><div class="stats" id="stats"></div><span class="muted" id="clock" style="margin-left:auto"></span>
+<header><h1>⚜ Civ VII Autopilot</h1><nav class="tabs"><a data-tab="overview" class="on">Overview</a><a data-tab="map">Map</a><a data-tab="charts">Charts</a><a data-tab="tree">Tech tree</a><a data-tab="civs">Civilizations</a><a data-tab="settings">Settings</a><a data-tab="costs">Costs</a></nav><span id="state" class="pill">…</span><div class="stats" id="stats"></div><span class="muted" id="clock" style="margin-left:auto"></span>
 <div class="ctl"><button id="btnPause">⏸ Pause</button>
-<a id="whoPlays" title="Who plays what. Change it on the Settings &amp; costs tab" style="cursor:pointer;color:var(--dim)"></a></div></header>
+<a id="whoPlays" title="Who plays what. Change it on the Settings tab" style="cursor:pointer;color:var(--dim)"></a></div></header>
 <div id="toast"></div>
 <main id="tab-overview">
  <div class="col">
@@ -430,20 +448,22 @@ tr.me td{background:#1c2433}.bar{height:5px;background:var(--line);border-radius
  </div>
 </main>
 <div id="tab-map" style="display:none;padding:14px 20px"><section><h2 id="mapTitle">World map (what we've seen)</h2><div style="overflow:auto"><canvas id="mapc"></canvas></div><div id="mapLegend" class="chips"></div></section></div>
-<div id="tab-costs" style="display:none;padding:14px 20px"><div class="grid2">
+<div id="tab-settings" style="display:none;padding:14px 20px"><div class="grid2">
  <div class="col"><section><h2>Who plays what</h2><div class="muted" style="margin-bottom:8px;font-size:12.5px">Changes apply from the next turn. "default" = the command-line setting.</div><table id="cfgTbl"></table></section></div>
  <div class="col"><section><h2>Watching the game</h2><table><tr><th style="width:150px">Follow camera</th><td><label><input type="checkbox" id="cFollow"> pan to each action</label><div class="muted" style="font-size:11.5px">the game camera moves to whatever the agent is doing</div></td></tr><tr><th style="width:150px">Linger after actions</th><td><select id="cDelay"><option value="0">0s</option><option value="0.5">0.5s</option><option value="1">1s</option><option value="2">2s</option><option value="3">3s</option></select><div class="muted" style="font-size:11.5px">pause after each move or build so you can see it on the map</div></td></tr><tr><th style="width:150px">Pause between turns</th><td><select id="cTurn"><option value="0">0s</option><option value="5">5s</option><option value="15">15s</option><option value="30">30s</option><option value="60">60s</option></select><div class="muted" style="font-size:11.5px">extra wait before the next turn starts</div></td></tr></table></section><section><h2>Learning</h2><table>
 <tr><th style="width:150px">Learning</th><td><select id="cLearn"><option value="off">off</option><option value="ingame">in-game only (rules lookup + lessons)</option><option value="online">in-game + online research</option></select><div class="muted" style="font-size:11.5px">lessons it saves are added to its instructions in this and future games</div></td></tr>
 <tr><th>Online research</th><td><select id="cResearch"><option value="1">1 per age</option><option value="3">3 per age</option><option value="5">5 per age</option><option value="10">10 per age</option></select><div class="muted" style="font-size:11.5px" id="researchUsed">each research session costs about $0.10-0.50</div></td></tr>
 </table></section>
-<section><h2>Narration</h2><table><tr><th style="width:150px">Read aloud</th><td><label><input type="checkbox" id="cTTS"> narrate the chronicle</label><div class="muted" style="font-size:11.5px">reads each new chronicle entry in this browser</div></td></tr><tr><th style="width:150px">Voice</th><td><select id="cVoice" title="Narrator voice"><option value="en-GB-RyanNeural">Ryan (UK)</option><option value="en-GB-ThomasNeural">Thomas (UK)</option><option value="en-US-AndrewNeural">Andrew (US)</option><option value="en-US-BrianNeural">Brian (US)</option><option value="en-US-ChristopherNeural">Christopher (US)</option><option value="en-US-GuyNeural">Guy (US)</option><option value="en-US-DavisNeural">Davis (US)</option><option value="en-GB-SoniaNeural">Sonia (UK)</option><option value="en-US-AriaNeural">Aria (US)</option></select> <button id="btnTest" class="btn" title="Hear the latest entry">▶ test</button><div class="muted" style="font-size:11.5px">saved in this browser only</div></td></tr></table></section></div>
+<section><h2>Setup</h2><div class="muted" style="font-size:11.5px;margin-bottom:6px">optional components on the machine running the autopilot</div><table id="setupTbl"></table><button id="btnInstAll" class="btn" style="display:none">Install all missing</button><pre id="instLog" style="display:none;max-height:180px;overflow:auto;font-size:11px;white-space:pre-wrap"></pre></section><section><h2>Narration</h2><table><tr><th style="width:150px">Read aloud</th><td><label><input type="checkbox" id="cTTS"> narrate the chronicle</label><div class="muted" style="font-size:11.5px">reads each new chronicle entry in this browser</div></td></tr><tr><th style="width:150px">Voice</th><td><select id="cVoice" title="Narrator voice"><option value="en-GB-RyanNeural">Ryan (UK)</option><option value="en-GB-ThomasNeural">Thomas (UK)</option><option value="en-US-AndrewNeural">Andrew (US)</option><option value="en-US-BrianNeural">Brian (US)</option><option value="en-US-ChristopherNeural">Christopher (US)</option><option value="en-US-GuyNeural">Guy (US)</option><option value="en-US-DavisNeural">Davis (US)</option><option value="en-GB-SoniaNeural">Sonia (UK)</option><option value="en-US-AriaNeural">Aria (US)</option></select> <button id="btnTest" class="btn" title="Hear the latest entry">▶ test</button><div class="muted" style="font-size:11.5px">saved in this browser only</div><div id="ttsStatus" style="font-size:11.5px"></div></td></tr></table></section></div>
 </div>
-<div style="margin-top:14px">
+<section style="margin-top:14px"><h2>What it knows</h2><div id="skillList" class="muted" style="margin-bottom:8px"></div><pre class="notes" id="lessons" style="max-height:36vh"></pre></section>
+</div>
+<div id="tab-costs" style="display:none;padding:14px 20px">
+<div>
  <section><h2>Cost per turn</h2><div id="costTiles" class="chips" style="gap:18px;margin-bottom:6px"></div><div id="byBrain"></div></section>
 </div>
 <section style="margin-top:14px"><h2 style="display:flex;align-items:center;gap:10px">Cost per turn by role<span class="muted" id="costLbl" style="margin-left:auto;text-transform:none;letter-spacing:0"></span></h2>
  <svg id="costSvg" viewBox="0 0 1000 240" style="width:100%;height:240px"></svg><div class="lg" id="costLg" style="display:flex;gap:14px;font-size:12px"></div></section>
-<section style="margin-top:14px"><h2>What it knows</h2><div id="skillList" class="muted" style="margin-bottom:8px"></div><pre class="notes" id="lessons" style="max-height:36vh"></pre></section>
 <section style="margin-top:14px"><h2>Recent turns</h2><div style="max-height:46vh;overflow:auto"><table id="costTbl"></table></div></section>
 </div>
 <div id="tab-charts" style="display:none;padding:14px 20px"><div id="charts" class="civgrid"><span class="muted">collecting history — one point per turn from now on…</span></div></div>
@@ -509,9 +529,9 @@ async function tick(){
 tick();setInterval(tick,3000);
 let tab='overview';
 // ---------- tabs (generalised) ----------
-const TABS=['overview','map','charts','tree','civs','costs'];
+const TABS=['overview','map','charts','tree','civs','settings','costs'];
 document.querySelectorAll('.tabs a').forEach(a=>a.addEventListener('click',()=>{tab=a.dataset.tab;document.querySelectorAll('.tabs a').forEach(b=>b.classList.toggle('on',b==a));
- for(const t of TABS)$('tab-'+t).style.display=t==tab?'':'none';if(tab=='civs')civTick();if(tab=='map')mapTick();if(tab=='charts')chartTick();if(tab=='tree')treeTick();if(tab=='costs')costTick();}));
+ for(const t of TABS)$('tab-'+t).style.display=t==tab?'':'none';if(tab=='civs')civTick();if(tab=='map')mapTick();if(tab=='charts')chartTick();if(tab=='tree')treeTick();if(tab=='settings')settingsTick();if(tab=='costs')costTick();}));
 
 // ---------- controls ----------
 let ctl=null;
@@ -522,17 +542,19 @@ function renderCtl(){if(!ctl)return;const b=$('btnPause');b.textContent=ctl.paus
 let BRAINS=[],DEFS={};
 const brainName=spec=>{if(spec==null||spec==='')return'?';const b=BRAINS.find(b=>b.spec==spec);return b?b.label.split(' (')[0].split(' - ')[0]:String(spec)};
 const defLabel=key=>DEFS[key]!=null?`default (${brainName(DEFS[key])})`:'default';
-async function loadBrains(){try{BRAINS=await (await fetch('/api/brains')).json()}catch(e){BRAINS=[]}renderWho()}
-// read-only summary in the header; the Config & costs tab is the one place to change it
+let BPROB={};
+async function loadBrains(){try{BRAINS=await (await fetch('/api/brains')).json()}catch(e){BRAINS=[]}
+ try{BPROB=(await (await fetch('/api/deps')).json()).brains||{}}catch(e){BPROB={}}renderWho()}
+// read-only summary in the header; the Settings tab is the one place to change it
 function renderWho(){if(!ctl||!$('whoPlays'))return;
  const eff=k=>{const v=ctl[k]||DEFS[k];return v=='turn'?'same as hard turns':brainName(v)};
  const ev=ctl.modelEvery!==''&&ctl.modelEvery!=null?+ctl.modelEvery:DEFS.modelEvery;
- const items=[['strategist','reviewBrain'],['hard turns','turnBrain'],['routine','routineBrain'],['retry','retryBrain']].map(([n,k])=>`${n} <b style="color:var(--fg)">${esc(eff(k))}</b>`);
+ const items=[['strategist','reviewBrain'],['hard turns','turnBrain'],['routine','routineBrain'],['retry','retryBrain']].map(([n,k])=>`${n} <b style="color:var(--fg)">${esc(eff(k))}</b>`+(BPROB[k]?` <span style="color:#ffb86b" title="${esc(BPROB[k])}">⚠ unavailable: ${esc(BPROB[k])}</span>`:''));
  if(ev!=null)items.push(ev?`model check-in every <b style="color:var(--fg)">${ev}</b> turns`:'no forced check-in');
  $('whoPlays').innerHTML=items.join(' · ')+' <span style="color:var(--blue)">✎</span>'}
 $('cLearn').onchange=e=>postCtl({learning:e.target.value});
 $('cResearch').onchange=e=>postCtl({researchPerAge:+e.target.value});
-$('whoPlays').onclick=()=>document.querySelector('.tabs a[data-tab="costs"]').click();
+$('whoPlays').onclick=()=>document.querySelector('.tabs a[data-tab="settings"]').click();
 function pickBrain(e,key){let v=e.target.value;if(v=='__custom'){v=(window.prompt('Brain spec, e.g. openai:gpt-5.1, ollama:llama3.3, openrouter:vendor/model, codex:gpt-5.5','')||'').trim();if(!v){renderCtl();return}}
  postCtl({[key]:v}).then(loadBrains)}
 setTimeout(loadBrains,300);
@@ -556,6 +578,33 @@ function pump(){if(saying||!sayQ.length)return;saying=true;const t=sayQ.shift();
  const a=new Audio('/api/tts?voice='+encodeURIComponent($('cVoice').value)+'&text='+encodeURIComponent(t));
  const done=()=>{saying=false;setTimeout(pump,400)};a.onended=done;a.onerror=()=>{speakBrowser(t);done()};a.play().catch(()=>{speakBrowser(t);done()})}
 function speak(t,force){if(!force&&!$('cTTS').checked)return;sayQ.push(t);pump()}
+// voice check: server-side neural voice (edge-tts package) and the browser's fallback voices
+async function checkVoice(){
+ let deps=[];try{deps=(await (await fetch('/api/deps')).json()).packages||[]}catch(e){}
+ const edge=deps.find(d=>d.name=='edge_tts');let n=0;try{n=speechSynthesis.getVoices().length}catch(e){}
+ const msgs=[];
+ if(edge&&!edge.ok)msgs.push('⚠ neural voice unavailable: edge_tts is not installed (install it under Setup above)');
+ if(edge&&!edge.ok&&!n)msgs.push('⚠ no browser voices either, so nothing will be heard (Windows: Settings → Time &amp; language → Speech → add voices)');
+ else if(edge&&!edge.ok)msgs.push(`using the browser voice instead (${n} installed)`);
+  $('ttsStatus').innerHTML=msgs.length?msgs.map(m=>`<div style="color:#ffb86b">${m}</div>`).join(''):(edge?'<span class="muted">✓ neural voice ready</span>':'');
+}
+// setup: show each optional component and install missing ones from here
+let DEPS=[];
+async function loadSetup(){try{DEPS=(await (await fetch('/api/deps')).json()).packages||[]}catch(e){return}
+ $('setupTbl').innerHTML=DEPS.map(d=>`<tr><th style="width:150px">${esc(d.name)}</th><td>${d.ok?'<span style="color:#7ee787">✓ installed</span>':`<button class="btn" data-inst="${esc(d.name)}">Install</button> <span style="color:#ffb86b">missing</span>`}<div class="muted" style="font-size:11.5px">${esc(d.feature)}</div></td></tr>`).join('');
+ $('btnInstAll').style.display=DEPS.some(d=>!d.ok)?'':'none';
+ document.querySelectorAll('[data-inst]').forEach(b=>b.onclick=()=>installDeps([b.dataset.inst]))}
+async function installDeps(names){const L=$('instLog');L.style.display='';
+ document.querySelectorAll('[data-inst],#btnInstAll').forEach(b=>b.disabled=true);
+ for(const n of names){L.textContent+=`installing ${n}...\n`;L.scrollTop=L.scrollHeight;
+  try{const r=await (await fetch('/api/install',{method:'POST',headers:{'X-Civ-Dashboard':'1'},body:JSON.stringify({name:n})})).json();
+   L.textContent+=(r.ok?`✓ ${n} installed\n`:`✗ ${n} failed:\n${r.log}\n`)}catch(e){L.textContent+=`✗ ${n}: ${e}\n`}
+  L.scrollTop=L.scrollHeight}
+ await loadSetup();checkVoice();loadBrains()}
+$('btnInstAll').onclick=()=>installDeps(DEPS.filter(d=>!d.ok).map(d=>d.name));
+setTimeout(loadSetup,500);
+try{speechSynthesis.onvoiceschanged=checkVoice}catch(e){}
+setTimeout(checkVoice,500);
 function toast(h,sub){const t=$('toast');t.innerHTML=esc(h)+(sub?`<small>${esc(sub)}</small>`:'');t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),9000)}
 function renderChron(list){
  if(!list||!list.length)return;
@@ -745,9 +794,9 @@ function drawCharts(hoverT,sel){
   $('ch_'+k).innerHTML=s;$('lg_'+k).innerHTML=lg;
  }
 }
-setInterval(()=>{if(tab=='map')mapTick();if(tab=='charts')chartTick();if(tab=='costs')costTick()},8000);
+setInterval(()=>{if(tab=='map')mapTick();if(tab=='charts')chartTick();if(tab=='settings')settingsTick();if(tab=='costs')costTick()},8000);
 
-// ---------- config & costs ----------
+// ---------- settings + costs ----------
 const ROLES=[['reviewBrain','Strategist','strategy review every 10 turns and at each new age'],
  ['turnBrain','Hard turns','turns with threats, diplomacy, tech/civic/policy choices, settlers, events'],
  ['routineBrain','Routine turns','production, growth, promotions only. Jev picks from the options and rules move units'],
@@ -774,8 +823,9 @@ async function skillTick(){
  $('skillList').innerHTML='Skills: '+(k.skills.map(x=>`<b style="color:var(--fg)">${esc(x.folder)}</b> <span title="${esc(x.description)}">(${Math.round(x.chars/1000*10)/10}k chars)</span>`).join(' · ')||'none');
  $('lessons').textContent=(k.lessons||'(no lessons saved yet: the agent adds them with remember_lesson as it plays)').replace(/^---[\s\S]*?---\s*/,'');
  const age=(window.lastAge||''),used=k.researchUsage[age]||0;$('researchUsed').textContent=`used ${used} this age · each research session costs about $0.10-0.50`}
+function settingsTick(){if(tab!='settings')return;renderCfg();skillTick()}
 async function costTick(){
- if(tab!='costs')return;renderCfg();skillTick();
+ if(tab!='costs')return;
  let c;try{c=await (await fetch('/api/costs')).json()}catch(e){return}
  const s=c.summary;
  $('costTiles').innerHTML=[['last 10 turns',s.last10],['last 25',s.last25],['this age',s.thisAge],['whole game',s.all]].map(([n,v])=>`<div><div class="muted" style="font-size:11.5px">${n}</div><b style="font-size:20px">${usd(v)}</b><span class="muted"> /turn</span></div>`).join('')+
@@ -837,6 +887,10 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/state"):
             body = json.dumps(api_state(), ensure_ascii=False).encode("utf-8")
+            ctype = "application/json"
+        elif self.path.startswith("/api/deps"):
+            import media
+            body = json.dumps({"packages": media.dependencies(), "brains": brain_problems()}).encode("utf-8")
             ctype = "application/json"
         elif self.path.startswith("/api/tts"):
             from urllib.parse import parse_qs, urlparse
@@ -909,6 +963,19 @@ def _do_post(self):
         out = json.dumps(start_video(opts)).encode("utf-8")
         self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(out)
         return
+    if self.path.startswith("/api/install"):
+        # the custom header forces a CORS preflight (which we never answer), so other websites can't trigger installs
+        if self.headers.get("X-Civ-Dashboard") != "1":
+            self.send_response(403); self.end_headers(); return
+        import media
+        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            name = json.loads(self.rfile.read(n) or b"{}").get("name", "")
+        except (ValueError, AttributeError):
+            name = ""
+        out = json.dumps(media.install(name)).encode("utf-8")
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(out)
+        return
     if not self.path.startswith("/api/control"):
         self.send_response(404); self.end_headers(); return
     n = int(self.headers.get("Content-Length") or 0)
@@ -929,4 +996,8 @@ H.do_POST = _do_post
 if __name__ == "__main__":
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
     print(f"Civ VII autopilot dashboard: http://localhost:{PORT}")
+    import media
+    for d in media.dependencies():
+        if not d["ok"]:
+            print(f"  missing {d['name']} -> no {d['feature']}. Fix: {d['install']}")
     srv.serve_forever()

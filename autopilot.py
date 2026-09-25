@@ -14,6 +14,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import time
 import traceback
 
@@ -72,20 +73,55 @@ def port_open():
         return False
 
 
-def ensure_tuner_enabled():
-    path = os.path.join(os.environ["LOCALAPPDATA"], "Firaxis Games", "Sid Meier's Civilization VII", "AppOptions.txt")
+APPOPTIONS = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Firaxis Games", "Sid Meier's Civilization VII", "AppOptions.txt")
+
+
+def tuner_enabled():
+    """True/False from AppOptions.txt, None if the game hasn't created the file yet (first run on this PC)."""
     try:
-        txt = open(path, encoding="utf-8", errors="replace").read()
+        txt = open(APPOPTIONS, encoding="utf-8", errors="replace").read()
     except FileNotFoundError:
-        return
-    if "\nEnableTuner 1" not in txt:
+        return None
+    return "\nEnableTuner 1" in txt
+
+
+def ensure_tuner_enabled():
+    """Turn the FireTuner on in AppOptions.txt. The game only reads it at startup, and it rewrites the file
+    itself, so only call this while the game is closed. Returns False if the file doesn't exist yet."""
+    state = tuner_enabled()
+    if state is None:
+        log("AppOptions.txt not found yet (the game creates it on its first start)")
+        return False
+    if not state:
         import re
-        txt = re.sub(r"\n;?\s*EnableTuner\s+-?\d+", "\nEnableTuner 1", txt)
-        open(path, "w", encoding="utf-8").write(txt)
+        txt = open(APPOPTIONS, encoding="utf-8", errors="replace").read()
+        txt, n = re.subn(r"\n;?\s*EnableTuner\s+-?\d+", "\nEnableTuner 1", txt)
+        if not n:  # the line is missing entirely: add it under [Debug]
+            txt = txt.replace("[Debug]", "[Debug]\nEnableTuner 1", 1) if "[Debug]" in txt else txt + "\n[Debug]\nEnableTuner 1\n"
+        open(APPOPTIONS, "w", encoding="utf-8").write(txt)
         log("enabled FireTuner in AppOptions.txt")
+    return True
+
+
+def game_running():
+    out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, errors="replace").stdout
+    return "civ7_" in out.lower()
+
+
+def close_game():
+    subprocess.run(["taskkill", "/F", "/IM", "Civ7_*"], capture_output=True)
+    for _ in range(30):
+        if not game_running():
+            break
+        time.sleep(1)
+    time.sleep(3)  # let it finish writing its option files
 
 
 def launch_game():
+    # the game is open but was started without the tuner: it has to restart with the tuner on
+    if game_running() and not port_open():
+        log("Civ VII is running without the FireTuner port - closing it to restart with the tuner on")
+        close_game()
     ensure_tuner_enabled()
     steam = r"C:\Program Files (x86)\Steam\steam.exe"
     try:
@@ -94,15 +130,26 @@ def launch_game():
             steam = winreg.QueryValueEx(k, "SteamExe")[0]
     except Exception:
         pass
-    log(f"launching Civ VII via {steam}")
-    subprocess.Popen([steam, "-applaunch", STEAM_APPID])
-    for _ in range(300):
-        if port_open():
-            log("tuner port open")
-            time.sleep(20)
-            return
-        time.sleep(2)
-    raise RuntimeError("game did not open tuner port within 10 minutes")
+    for attempt in range(3):
+        log(f"launching Civ VII via {steam}")
+        subprocess.Popen([steam, "-applaunch", STEAM_APPID])
+        for i in range(300):
+            if port_open():
+                log("tuner port open")
+                time.sleep(20)
+                return
+            # started but no port after 90s: the settings file had the tuner off (e.g. the game only just created
+            # it on its first run). Fix it and restart the game.
+            if i >= 45 and game_running() and tuner_enabled() is False:
+                log("game started without the FireTuner - enabling it and restarting the game")
+                close_game()
+                ensure_tuner_enabled()
+                break
+            time.sleep(2)
+        else:
+            break
+    raise RuntimeError(f"game did not open the FireTuner port (127.0.0.1:4318). Check that {APPOPTIONS} "
+                       "has the line 'EnableTuner 1' and restart the game.")
 
 
 # ---------------------------------------------------------------- shell / setup
@@ -312,6 +359,10 @@ def run_claude(prompt, spec, tag, timeout=1500, max_rounds=None):
     """Run one agent session with the given brain spec ("claude:sonnet", "codex:gpt-5.5", "gemini:...", "ollama:...")."""
     if ":" not in spec and spec not in brains.OPENAI_COMPAT:
         spec = "claude:" + spec
+    problem = brains.check(spec)
+    if problem:  # e.g. switched on the dashboard to a brain this machine doesn't have
+        log(f"{tag}: brain {spec} unavailable: {problem}")
+        return f"brain unavailable: {problem}"
     logfile = os.path.join(LOGS, f"{tag}.jsonl")
     system = SYSTEM_PROMPT + "\n\n" + read(PRIMER) + skills_text()
     t0 = time.time()
@@ -344,10 +395,42 @@ EASY_PENDING = {"CHOOSE_CITY_PRODUCTION", "CHOOSE_TOWN_PROJECT", "NEW_POPULATION
 THREAT_RADIUS = 4  # hostile units this close to one of our cities make the turn "hard"
 
 
-def _near_city(u, cities):
+THREAT_IMMINENT = 2  # this close, every turn is hard
+THREAT_RECHECK = 5   # a known, unchanged threat gets a fresh model look this often (turns)
+
+
+def _city_dist(u, cities):
+    """Tiles from this unit to our nearest city (99 if unknown)."""
     at = u.get("at") or [None, None]
-    return any(max(abs(at[0] - c["at"][0]), abs(at[1] - c["at"][1])) <= THREAT_RADIUS
-               for c in cities if at[0] is not None and c.get("at"))
+    return min((max(abs(at[0] - c["at"][0]), abs(at[1] - c["at"][1]))
+                for c in cities if at[0] is not None and c.get("at")), default=99)
+
+
+def _near_city(u, cities):
+    return _city_dist(u, cities) <= THREAT_RADIUS
+
+
+# the threat the model last looked at: independents often loiter near a city for dozens of turns without
+# attacking, so an unchanged threat shouldn't send every turn to the strong model
+_threat_seen = {"turn": -999, "count": 0, "dist": 99}
+
+
+def _threat_reason(near, cities, turn):
+    hostile = [u for u in near if u.get("hostile") and _near_city(u, cities)]
+    if not hostile:
+        _threat_seen.update(turn=-999, count=0, dist=99)
+        return ""
+    count, dist = len(hostile), min(_city_dist(u, cities) for u in hostile)
+    if dist <= THREAT_IMMINENT:
+        why = f"hostile units {dist} tile(s) from a city"
+    elif count > _threat_seen["count"] or dist < _threat_seen["dist"]:
+        why = f"hostile units within {THREAT_RADIUS} tiles of a city (new or closer)"
+    elif turn - _threat_seen["turn"] >= THREAT_RECHECK:
+        why = f"hostile units still within {THREAT_RADIUS} tiles of a city (periodic re-check)"
+    else:
+        return ""  # same loitering units the model already handled
+    _threat_seen.update(turn=turn, count=count, dist=dist)
+    return why
 
 
 def hard_turn_reasons(brief, review_this_turn, g=None):
@@ -360,8 +443,10 @@ def hard_turn_reasons(brief, review_this_turn, g=None):
         why.append("no threat data")
     else:
         cities = brief.get("cities") if isinstance(brief.get("cities"), list) else []
-        if any(u.get("hostile") and _near_city(u, cities) for u in near):
-            why.append(f"hostile units within {THREAT_RADIUS} tiles of a city")
+        threat = _threat_reason(near, cities, (brief.get("overview") or {}).get("turn", 0)
+                                if isinstance(brief.get("overview"), dict) else 0)
+        if threat:
+            why.append(threat)
     pend = brief.get("pending")
     if not isinstance(pend, dict):
         why.append("no pending data")
@@ -605,6 +690,17 @@ def main():
                 "retryBrain": args.retry_brain or "same as hard turns", "modelEvery": args.model_every}
     write_status(defaults=defaults)
 
+    # make sure every chosen brain can actually run here before touching the game
+    roles = {"turn": turn_brain(), "review": review_brain(), "routine": routine_brain(), "retry": retry_brain()}
+    for role, spec in roles.items():
+        problem = brains.check(spec)
+        if problem:
+            log(f"WARNING: {role} brain {spec} unavailable: {problem}")
+    if brains.check(roles["turn"]):
+        log(f"cannot play: the turn brain {roles['turn']} is unavailable. Choose another with --turn-brain "
+            f"or on the dashboard. Usable here: {', '.join(b['spec'] for b in brains.available()) or 'none'}")
+        sys.exit(1)
+
     if not port_open():
         launch_game()
     g = Game()
@@ -643,6 +739,9 @@ def main():
     quiet_streak = 0
     last_model_turn = -999
     while played < args.max_turns:
+        if code_changed():  # between turns, so no session is cut off
+            log("autopilot code changed on disk - restarting to load it")
+            sys.exit(RESTART_CODE)
         st = wait_for_our_turn(g, turn_brain())
         if st == "no-game":
             log("game process gone - relaunching and continuing latest save")
@@ -807,5 +906,32 @@ def finish_turn(g, turn, result, rounds, turn_brain):
         fallback_finish_turn(g, turn)
 
 
+RESTART_CODE = 3  # exit code that asks the supervisor for a fresh process
+# modules the autopilot process loads (civ_mcp.py and bot*.js are reloaded on their own)
+CODE_FILES = [os.path.join(HERE, f) for f in ("autopilot.py", "brains.py", "control.py", "jev.py",
+                                              "learning.py", "game.py", "tuner.py")]
+_code_stamp = {f: os.path.getmtime(f) for f in CODE_FILES if os.path.exists(f)}
+
+
+def code_changed():
+    return any(os.path.exists(f) and os.path.getmtime(f) != t for f, t in _code_stamp.items())
+
+
+def supervise():
+    """Run the autopilot in a child process and start a fresh one whenever it exits with RESTART_CODE
+    (its code changed). --new only applies to the first run: restarts continue the game."""
+    args = sys.argv[1:]
+    while True:
+        rc = subprocess.call([sys.executable, "-u", os.path.abspath(__file__)] + args,
+                             env=dict(os.environ, CIV_AUTOPILOT_CHILD="1"))
+        if rc != RESTART_CODE:
+            sys.exit(rc)
+        args = [a for a in args if a != "--new"]
+        time.sleep(2)
+
+
 if __name__ == "__main__":
-    main()
+    if os.environ.get("CIV_AUTOPILOT_CHILD"):
+        main()
+    else:
+        supervise()

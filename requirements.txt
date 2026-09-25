@@ -1,0 +1,6 @@
+# required: the game tools the model plays with
+mcp
+# optional: narration voice, screenshots and chronicle video (also installable from the dashboard's Setup section)
+edge-tts
+pillow
+pywin32

@@ -44,7 +44,7 @@ Each turn is routed by rules (no model call):
   somewhere to go, events): the turn brain, Claude Sonnet by default.
 - A model also plays at least every 3 turns, and the strategist (Claude Opus) reviews every 10 turns.
 
-Change any of these on the dashboard's **Settings & costs** tab (they take effect next turn), or with the
+Change any of these on the dashboard's **Settings** tab (they take effect next turn; spending is on the **Costs** tab), or with the
 command-line defaults below. Other brains are supported too: Codex, Gemini, Ollama, OpenAI, OpenRouter.
 
 ## Learning and skills
@@ -58,13 +58,16 @@ command-line defaults below. Other brains are supported too: Codex, Gemini, Olla
 ## Run
 - `run_autopilot.bat` continues the current or latest game. Add `--new` to start a fresh one.
 - `stop_autopilot.bat` stops the agent. The game itself keeps running.
+- Editing the autopilot's code while it runs is fine: it restarts itself between turns to load the change.
+  Model choices changed on the dashboard apply from the next turn, with no restart.
 - Options: `--turn-model sonnet --review-model opus --routine-brain jev --model-every 3 --max-rounds 30
   --review-every 10 --difficulty DIFFICULTY_KING --map-size MAPSIZE_STANDARD --leader LEADER_X`
 
 Requirements:
 - Windows, Civilization VII on Steam, with `EnableTuner 1` in
   `%LOCALAPPDATA%\Firaxis Games\Sid Meier's Civilization VII\AppOptions.txt` (the autopilot sets this itself).
-- Python with `pip install mcp`.
+- Python with `pip install mcp` (or `pip install -r requirements.txt` for everything). Missing packages can also
+  be installed from the dashboard: **Settings → Setup** has an Install button for each one.
 - The `claude` CLI, logged in.
 - Optional: `DEFAPI_KEY` (defapi.org) for Jev routine turns. Without it, routine turns use the turn brain.
 

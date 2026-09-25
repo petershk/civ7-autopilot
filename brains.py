@@ -310,6 +310,58 @@ KNOWN = {
 }
 
 
+_checked = {}
+
+
+def _get_json(url, key=None, timeout=5):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"} if key else {})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def check(spec):
+    """Why this brain can't run on THIS machine, or "" if it can. Cached for a minute (it may hit the network).
+    Verifies the CLI is installed / the API key is set, and for API brains that the model exists."""
+    hit = _checked.get(spec)
+    if hit and time.time() - hit[0] < 60:
+        return hit[1]
+    prov, model = ("jev", "") if (spec or "").split(":")[0] == "jev" else parse_spec(spec)
+    problem = ""
+    if prov == "jev":
+        import jev
+        problem = "" if jev.available() else "Jev needs DEFAPI_KEY (defapi.org); routine turns fall back to the turn brain"
+    elif prov in ("claude", "codex", "gemini"):
+        if not (shutil.which(prov) or shutil.which(prov + ".cmd")):
+            problem = f"the {prov} CLI is not installed (not on PATH)"
+    elif prov == "ollama":
+        base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1").rsplit("/v1", 1)[0]
+        try:
+            names = {m.get("name", "") for m in _get_json(base + "/api/tags", timeout=3).get("models", [])}
+            if model not in names and f"{model}:latest" not in names:
+                problem = f"Ollama model {model!r} is not pulled (ollama pull {model})"
+        except Exception as e:
+            problem = f"Ollama is not reachable at {base} ({e})"
+    elif prov in OPENAI_COMPAT:
+        base, key_env = OPENAI_COMPAT[prov]
+        base = os.environ.get(f"{prov.upper()}_BASE_URL", base)
+        key = os.environ.get(key_env)
+        if not key:
+            problem = f"{key_env} is not set"
+        else:
+            try:
+                ids = {m.get("id") for m in _get_json(base + "/models", key).get("data", [])}
+                if ids and model not in ids:
+                    problem = f"{prov} has no model {model!r} for this key"
+            except Exception as e:  # can't verify (offline, rate limit): don't block on it
+                if getattr(e, "code", None) == 401:
+                    problem = f"{key_env} was rejected (401)"
+    else:
+        problem = f"unknown brain provider {prov!r}"
+    _checked[spec] = (time.time(), problem)
+    return problem
+
+
 def available():
     """Brains usable on THIS machine: installed CLIs, API keys present, Ollama models pulled, plus brains.json extras."""
     out = []
