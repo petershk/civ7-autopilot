@@ -463,7 +463,10 @@
     return out;
   };
   CB.promote = (uidS, w) => {
-    const opts = CB.promotionOptions(uidS); const m = pick(opts, w || "") || opts[0]; if (!m) return { ok: false, error: "no promotions available" };
+    // commendations pass canStart but a request for one can be silently ignored, leaving an army commander
+    // blocking the turn with a promotion still pending, so by default take a regular promotion first
+    const opts = CB.promotionOptions(uidS).sort((a, b) => /COMMENDATION/.test(a.key) - /COMMENDATION/.test(b.key));
+    const m = pick(opts, w || "") || opts[0]; if (!m) return { ok: false, error: "no promotions available" };
     const args = { PromotionType: Database.makeHash(m.key), PromotionDisciplineType: Database.makeHash(m.discipline) };
     Game.UnitCommands.sendRequest(parseCid(uidS), UnitCommandTypes.PROMOTE, args); return { ok: true, promotion: m.name };
   };

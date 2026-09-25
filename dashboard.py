@@ -550,7 +550,8 @@ function renderWho(){if(!ctl||!$('whoPlays'))return;
  const eff=k=>{const v=ctl[k]||DEFS[k];return v=='turn'?'same as hard turns':brainName(v)};
  const ev=ctl.modelEvery!==''&&ctl.modelEvery!=null?+ctl.modelEvery:DEFS.modelEvery;
  const items=[['strategist','reviewBrain'],['hard turns','turnBrain'],['routine','routineBrain'],['retry','retryBrain']].map(([n,k])=>`${n} <b style="color:var(--fg)">${esc(eff(k))}</b>`+(BPROB[k]?` <span style="color:#ffb86b" title="${esc(BPROB[k])}">⚠ unavailable: ${esc(BPROB[k])}</span>`:''));
- if(ev!=null)items.push(ev?`model check-in every <b style="color:var(--fg)">${ev}</b> turns`:'no forced check-in');
+ if(ctl.jevAll){items.splice(1,2,`<b style="color:#3fb950">Jev plays everything</b>`+(ctl.jevEmergencies!==false?` (emergencies: <b style="color:var(--fg)">${esc(eff('turnBrain'))}</b>)`:''))}
+ else if(ev!=null)items.push(ev?`model check-in every <b style="color:var(--fg)">${ev}</b> turns`:'no forced check-in');
  $('whoPlays').innerHTML=items.join(' · ')+' <span style="color:var(--blue)">✎</span>'}
 $('cLearn').onchange=e=>postCtl({learning:e.target.value});
 $('cResearch').onchange=e=>postCtl({researchPerAge:+e.target.value});
@@ -811,10 +812,17 @@ function cfgOptions(key){const cur=(ctl&&ctl[key])||'';let o=[['',defLabel(key)]
 function renderCfg(){if(!ctl||!$('cfgTbl'))return;
  if(document.activeElement!==$('cLearn'))$('cLearn').value=ctl.learning||'online';
  if(document.activeElement!==$('cResearch'))$('cResearch').value=String(ctl.researchPerAge||3);if($('cfgTbl').contains(document.activeElement))return;
- $('cfgTbl').innerHTML=ROLES.map(([k,n,d])=>`<tr><th style="width:120px">${n}</th><td><select data-k="${k}" class="cfgSel">${cfgOptions(k)}</select><div class="muted" style="font-size:11.5px">${d}</div></td></tr>`).join('')+
+ const jevOk=BRAINS.some(b=>b.provider=='jev');
+ $('cfgTbl').innerHTML=`<tr><th style="width:120px">Jev plays everything</th><td><label><input type="checkbox" id="cfgJevAll"${ctl.jevAll?' checked':''}${jevOk?'':' disabled'}> Jev makes every decision</label><div class="muted" style="font-size:11.5px">${jevOk?'tech, civics, events, diplomacy, settlers and combat are asked of Jev as multiple-choice questions; rules handle the rest. Much cheaper, less clever in wars':'needs a Jev key (DEFAPI_KEY)'}</div>`+
+  (ctl.jevAll?`<label style="display:block;margin-top:4px"><input type="checkbox" id="cfgJevEm"${ctl.jevEmergencies!==false?' checked':''}> hand emergencies to the hard-turn model</label><div class="muted" style="font-size:11.5px">enemies next to a city, or a turn Jev couldn't finish</div>`:'')+`</td></tr>`+
+  `<tr><th>Strategy review</th><td><select id="cfgReview">${[['',`default (every ${DEFS.reviewEvery??10} turns)`],['5','every 5 turns'],['10','every 10 turns'],['20','every 20 turns'],['40','every 40 turns'],['0','only at each new age']].map(([v,n])=>`<option value="${v}"${String(ctl.reviewEvery??'')==v?' selected':''}>${n}</option>`).join('')}</select><div class="muted" style="font-size:11.5px">the strategist updates the plan that every other brain, Jev included, follows</div></td></tr>`+
+  ROLES.map(([k,n,d])=>`<tr><th style="width:120px">${n}</th><td><select data-k="${k}" class="cfgSel">${cfgOptions(k)}</select><div class="muted" style="font-size:11.5px">${d}</div></td></tr>`).join('')+
   `<tr><th>Model check-in</th><td><select id="cfgEvery">${[['',`default (${DEFS.modelEvery!=null?(+DEFS.modelEvery?'every '+DEFS.modelEvery+' turns':'never force'):'3'})`],['0','never force'],['2','every 2 turns'],['3','every 3 turns'],['5','every 5 turns'],['10','every 10 turns']].map(([v,n])=>`<option value="${v}"${String(ctl.modelEvery??'')==v?' selected':''}>${n}</option>`).join('')}</select><div class="muted" style="font-size:11.5px">a model plays at least this often, even when every turn is routine</div></td></tr>`;
  document.querySelectorAll('.cfgSel').forEach(s=>s.onchange=e=>pickBrain(e,s.dataset.k));
- $('cfgEvery').onchange=e=>postCtl({modelEvery:e.target.value});}
+ $('cfgEvery').onchange=e=>postCtl({modelEvery:e.target.value});
+ if($('cfgJevAll'))$('cfgJevAll').onchange=e=>postCtl({jevAll:e.target.checked});
+ if($('cfgJevEm'))$('cfgJevEm').onchange=e=>postCtl({jevEmergencies:e.target.checked});
+ $('cfgReview').onchange=e=>postCtl({reviewEvery:e.target.value});}
 const _renderCtl=renderCtl;renderCtl=function(){_renderCtl();renderCfg()};
 const _loadBrains=loadBrains;loadBrains=async function(){await _loadBrains();renderCfg()};
 const usd=v=>v==null?'–':v<0.01&&v>0?'$'+v.toFixed(4):'$'+v.toFixed(3);

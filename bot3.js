@@ -56,6 +56,11 @@
       const here = safe(() => Game.UnitOperations.canStart(u.id, "UNITOPERATION_FOUND_CITY", INV, false).Success);
       const tgt = CB.settlerTargets[id];
       if (tgt && u.location.x == tgt[0] && u.location.y == tgt[1] && here) { CB.unitDo(id, "FOUND_CITY"); return "founded"; }
+      // keep heading for a chosen site (Jev's pick, or ours from an earlier turn); drop it if it's no longer reachable
+      if (tgt && !(u.location.x == tgt[0] && u.location.y == tgt[1])) {
+        const m = CB.moveTo(id, tgt[0], tgt[1]); if (m.ok) return "settler->" + tgt;
+        delete CB.settlerTargets[id];
+      }
       const spots = CB.settleSpots(id, 3);
       if (spots.length) {
         const s = spots[0];
@@ -183,6 +188,20 @@
     if (CB.blockingType() == "UNITS") for (const id of CB.readyUnits()) {
       const r = safe(() => CB.hold(id), {});
       log.push((r && r.ok ? "held unit " : "could not hold unit ") + id);
+    }
+    // a unit with a queued move it can no longer make (path blocked, target taken) isn't "ready", yet it still
+    // blocks the turn: take it from the blocking notification, cancel the stale move and re-order it
+    if (CB.blockingType() == "UNITS" && !CB.readyUnits().length) {
+      const nid = safe(() => N.findEndTurnBlocking(me(), N.getEndTurnBlockingType(me())));
+      const tgt = nid && safe(() => N.find(nid).Target);
+      const u = tgt && safe(() => Units.get(tgt));
+      if (u && u.owner == me()) {
+        const id = cid(u.id);
+        safe(() => Game.UnitCommands.sendRequest(u.id, "UNITCOMMAND_CANCEL", {}));
+        delete CB.settlerTargets[id];
+        const r = (lk("Units", u.type) || {}).FoundCity ? safe(() => CB.autoUnit(Units.get(u.id)), "?") : JSON.stringify(safe(() => CB.hold(id), {}));
+        log.push("stuck unit " + id + ": cancelled its queued move -> " + r);
+      }
     }
     // findEndTurnBlocking needs the blocking type; without it the engine may return null or an unrelated notification
     const blocker = () => {

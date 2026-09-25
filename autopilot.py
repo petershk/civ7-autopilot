@@ -12,6 +12,7 @@ import datetime as dt
 import glob
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -419,6 +420,22 @@ def _near_city(u, cities):
     return _city_dist(u, cities) <= THREAT_RADIUS
 
 
+def city_assault(brief):
+    """In "Jev plays everything" mode Jev handles units near enemies itself; only a real assault on a city goes to
+    a model: 2+ hostile military units next to a city, or 3+ within 2 tiles. Scouts and civilians don't count."""
+    near = brief.get("nearbyForeignUnits") if isinstance(brief.get("nearbyForeignUnits"), list) else []
+    cities = brief.get("cities") if isinstance(brief.get("cities"), list) else []
+    mil = [u for u in near if u.get("hostile") and not re.search(r"SCOUT|SETTLER|WORKER|MERCHANT|MISSIONARY|ARCHAEOLOGIST|GREAT",
+                                                                     str(u.get("type")))]
+    for c in cities:
+        if not c.get("at"):
+            continue
+        d = [max(abs(u["at"][0] - c["at"][0]), abs(u["at"][1] - c["at"][1])) for u in mil if u.get("at")]
+        if sum(x <= 1 for x in d) >= 2 or sum(x <= 2 for x in d) >= 3:
+            return f"{c.get('name')} under attack ({sum(x <= 2 for x in d)} hostile military units within 2 tiles)"
+    return ""
+
+
 # the threat the model last looked at: independents often loiter near a city for dozens of turns without
 # attacking, so an unchanged threat shouldn't send every turn to the strong model
 _threat_seen = {"turn": -999, "count": 0, "dist": 99}
@@ -689,6 +706,11 @@ def main():
     def retry_brain():
         return control.get().get("retryBrain") or args.retry_brain or turn_brain()
 
+    def review_every():
+        v = control.get().get("reviewEvery")
+        v = args.review_every if v is None or v == "" else int(v)
+        return v if v > 0 else 10 ** 6  # 0 = only at the start and at each new age
+
     def model_every():
         v = control.get().get("modelEvery")
         return args.model_every if v is None or v == "" else int(v)
@@ -696,7 +718,8 @@ def main():
     # what "default" means for each dashboard setting (the command-line values)
     defaults = {"turnBrain": default_turn, "reviewBrain": default_review,
                 "routineBrain": default_turn if args.routine_brain == "turn" else args.routine_brain,
-                "retryBrain": args.retry_brain or "same as hard turns", "modelEvery": args.model_every}
+                "retryBrain": args.retry_brain or "same as hard turns", "modelEvery": args.model_every,
+                "reviewEvery": args.review_every}
     write_status(defaults=defaults)
 
     # make sure every chosen brain can actually run here before touching the game
@@ -799,7 +822,7 @@ def main():
                      defaults=defaults)
 
         # strategic review
-        if age != last_age or turn - last_review_turn >= args.review_every or not os.path.exists(NOTES):
+        if age != last_age or turn - last_review_turn >= review_every() or not os.path.exists(NOTES):
             reason = "new age" if (last_age and age != last_age) else ("start" if last_age is None else "periodic")
             try:
                 run_claude(review_prompt(g, turn, reason), review_brain(), f"review_T{turn:03d}", timeout=1200)
@@ -831,16 +854,35 @@ def main():
         try:
             brief = get_brief(g)
             why = hard_turn_reasons(brief, last_review_turn == turn, g)
-            every = model_every()
-            if not why and every and turn - last_model_turn >= every:
-                why = [f"model check-in (every {every} turns)"]
-            brain = turn_brain() if why else routine_brain()
-            log(f"T{turn}: {brain} ({'hard: ' + '; '.join(why) if why else 'routine turn'})")
-            if brain.startswith("jev"):
-                if play_jev_turn(g, turn, brief, brain):
-                    played += 1
-                    continue
+            ctl = control.get()
+            brain = None
+            if ctl.get("jevAll") and jev.available():
+                # Jev plays everything; the turn brain only takes emergencies (if allowed)
+                emergency = [a for a in [city_assault(brief)] if a]
+                if not (emergency and ctl.get("jevEmergencies", True)):
+                    log(f"T{turn}: jev plays everything" + (f" ({'; '.join(why)})" if why else ""))
+                    spec = routine_brain() if routine_brain().startswith("jev") else "jev"
+                    if play_jev_turn(g, turn, brief, spec, everything=True):
+                        played += 1
+                        continue
+                    if not ctl.get("jevEmergencies", True):
+                        fallback_finish_turn(g, turn)
+                        played += 1
+                        continue
+                    emergency = ["Jev's turn didn't end"]
                 brain = turn_brain()
+                log(f"T{turn}: {brain} (emergency: {'; '.join(emergency)})")
+            if brain is None:
+                every = model_every()
+                if not why and every and turn - last_model_turn >= every:
+                    why = [f"model check-in (every {every} turns)"]
+                brain = turn_brain() if why else routine_brain()
+                log(f"T{turn}: {brain} ({'hard: ' + '; '.join(why) if why else 'routine turn'})")
+                if brain.startswith("jev"):
+                    if play_jev_turn(g, turn, brief, brain):
+                        played += 1
+                        continue
+                    brain = turn_brain()
             last_model_turn = turn
             result = run_claude(turn_prompt(g, turn, brief), brain, f"turn_T{turn:03d}", max_rounds=rounds) or ""
         except (OSError, ConnectionError) as e:
@@ -862,15 +904,17 @@ def main():
     log("autopilot finished")
 
 
-def play_jev_turn(g, turn, brief, spec):
-    """Routine turn without a model session: Jev picks each routine decision, heuristics move units.
+def play_jev_turn(g, turn, brief, spec, everything=False):
+    """Turn without a model session: Jev picks each decision, heuristics move units. everything=True also
+    gives Jev tech/civics/events/diplomacy/settlers/combat (jev.play_full_turn).
     Returns True if the turn ended; False hands the turn to the turn brain."""
     if not jev.available():
         log(f"T{turn}: no DEFAPI_KEY for Jev; using the turn brain")
         return False
     t0 = time.time()
     try:
-        res = jev.play_routine_turn(g, turn, brief, read(NOTES), spec, log)
+        play = jev.play_full_turn if everything else jev.play_routine_turn
+        res = play(g, turn, brief, read(NOTES), spec, log)
     except (OSError, ConnectionError):
         raise
     except Exception as e:
@@ -882,7 +926,7 @@ def play_jev_turn(g, turn, brief, spec):
     log(f"jev_T{turn:03d}: rc={'ok' if res['ended'] else 'handoff'} tools={len(res['decisions'])} {time.time()-t0:.0f}s "
         f"cost={res['cost']:.6f} brain={spec} :: {picks}{tail}")
     with open(os.path.join(STATE, "jev_decisions.jsonl"), "a", encoding="utf-8") as f:
-        f.write(json.dumps({"turn": turn, **{k: res.get(k) for k in ("ended", "cost", "decisions", "handoff", "errors")}},
+        f.write(json.dumps({"turn": turn, **{k: res.get(k) for k in ("ended", "cost", "decisions", "handoff", "errors", "auto")}},
                            ensure_ascii=False) + "\n")
     return bool(res["ended"])
 

@@ -14,6 +14,9 @@ DEFAULTS = {
     "routineBrain": "",     # "" = command-line default (jev); "jev", a brain spec, or "turn" (= turnBrain)
     "retryBrain": "",       # "" = turnBrain
     "modelEvery": "",       # "" = command-line default (3): a model plays at least every N turns
+    "jevAll": False,        # Jev plays every turn (decisions with options); heuristics do the rest
+    "jevEmergencies": True, # ...but the turn brain takes turns with enemies next to a city
+    "reviewEvery": "",      # "" = command-line default (10): turns between strategy reviews (0 = only at new ages)
     "learning": "online",   # off | ingame (rules lookup + lessons) | online (also web research)
     "researchPerAge": 3,    # max online research sessions per age
 }
