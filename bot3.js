@@ -107,7 +107,7 @@
 
   CB.autoProduction = (c) => {
     const opts = CB.buildOptions(cid(c.id));
-    const cities = P().Cities.getCities().length; const limit = safe(() => P().Cities.getCityLimit(), 0) || 99;
+    const cities = P().Cities.getCities().length; const limit = safe(() => P().Stats.settlementCap, 0) || 99;
     const settlers = P().Units.getUnits().filter(u => (lk("Units", u.type) || {}).FoundCity).length;
     const military = safe(() => P().Stats.getNumCombatUnits ? P().Stats.getNumCombatUnits() : 0, 0);
     let choice = null;

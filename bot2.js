@@ -39,7 +39,7 @@
     o.yields = {}; for (const k in YN) o.yields[YN[k]] = Math.round(safe(() => p.Stats.getNetYield(YieldTypes[k]), 0) * 10) / 10;
     o.gold = Math.round(safe(() => p.Treasury.goldBalance, 0));
     o.influence = Math.round(safe(() => p.DiplomacyTreasury.diplomacyBalance, 0));
-    o.cities = safe(() => p.Cities.getCities().length); o.settlementLimit = safe(() => p.Cities.getCityLimit());
+    o.cities = safe(() => p.Cities.getCities().length); o.settlementLimit = safe(() => p.Stats.settlementCap);  // Cities.getCityLimit() always returns 0
     o.units = safe(() => p.Units.getUnitIds().length);
     const techTree = safe(() => Game.ProgressionTrees.getTree(me(), p.Techs.getTreeType()));
     const at = safe(() => techTree.nodes[techTree.activeNodeIndex].nodeType);
